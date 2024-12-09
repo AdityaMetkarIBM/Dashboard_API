@@ -5,10 +5,11 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from datetime import datetime,timedelta
+import json
 
 # Load GitHub token from environment variable
 load_dotenv()
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN2')
 MONGO_URI = os.getenv('MONGO_URI')
 
 
@@ -32,7 +33,8 @@ github_events = {
 # MongoDB connection
 client = MongoClient(MONGO_URI)  
 db = client['dashboard']  
-collection = db['github_data'] 
+user_collection = None # will be set dynamically through routes
+data_collection = None
 
 
 # FLASK APP ---------------------
@@ -52,21 +54,18 @@ def get_start_date():
 
 def get_login_name(username):
 
-    if '@' in username and '.' in username:
-        url = f"https://api.github.com/search/users?q={username}"
-        response = requests.get(url, headers=HEADERS)  
+    url = f"https://api.github.com/search/users?q={username}"
+    response = requests.get(url, headers=HEADERS)  
 
-        if response.status_code == 200:
-            search_results = response.json()
-            if search_results['total_count'] > 0:
-                return search_results['items'][0]['login']
-            else:
-                return None
+    if response.status_code == 200:
+        search_results = response.json()
+        if search_results['total_count'] > 0:
+            return search_results['items'][0]['login']
         else:
-            print(f"Error fetching user by email: {response.status_code} {response.text}")
-            return None  # Handle error response appropriately
+            return None
     else:
-        return username
+        print(f"Error fetching user by email: {response.status_code} {response.text}")
+        return None  # Handle error response appropriately
 
 def get_user_info(username):
     url = f"{BASE_URL}/users/{username}"
@@ -79,22 +78,22 @@ def get_user_info(username):
         return {}
 
 def get_user_contributions(username):
-    # GraphQL query
+    # Corrected GraphQL query
     query = '''
     query($userName: String!) { 
-      user(login: $userName) {
-        contributionsCollection {
-          contributionCalendar {
-            totalContributions
-            weeks {
-              contributionDays {
-                contributionCount
-                date
-              }
+        user(login: $userName){
+            contributionsCollection {
+                contributionCalendar {
+                    totalContributions
+                    weeks {
+                        contributionDays {
+                            contributionCount
+                            date
+                        }
+                    }
+                }
             }
-          }
         }
-      }
     }
     '''
 
@@ -105,7 +104,7 @@ def get_user_contributions(username):
     }
     payload = {
         "query": query,
-        "variables": {"userName": username}
+        "variables": {"userName": username}  # Fix variable to match the query ($userName)
     }
 
     # Make the request
@@ -114,15 +113,27 @@ def get_user_contributions(username):
     if response.status_code == 200:
         contributions = response.json()
 
-        total_contributions = contributions['data']['user']['contributionsCollection']['contributionCalendar']['totalContributions']
-        weeks = contributions['data']['user']['contributionsCollection']['contributionCalendar']['weeks']
+        # Check if the response contains valid data
+        if 'data' in contributions and contributions['data']:
+            user_data = contributions['data'].get('user', {})
+            if user_data and 'contributionsCollection' in user_data:
+                contribution_data = user_data['contributionsCollection']['contributionCalendar']
 
-        data = {
-            "total": total_contributions,
-            "weeks":weeks
-        }
+                total_contributions = contribution_data.get('totalContributions', 0)
+                weeks = contribution_data.get('weeks', [])
 
-        return data
+                # Return the relevant data
+                return {
+                    "total": total_contributions,
+                    "weeks": weeks
+                }
+            else:
+                print("Error: 'contributionsCollection' not found in the response data")
+                return None
+        else:
+            print(f"Error: 'data' field not found or empty in the response. Response: {json.dumps(contributions, indent=2)}")
+            return None
+
     else:
         print(f"Error fetching contributions: {response.status_code} {response.text}")
         return None
@@ -155,12 +166,18 @@ def get_commit_details_from_SHA(repo_full_name, sha):
     if response.status_code == 200:
         commit_data = response.json()
 
+        if commit_data['commit']['message'][:12] == 'Merge branch':
+            merged = True
+        else:
+            merged = False
+
         return {
             "sha": commit_data["sha"],
             "message": commit_data["commit"]["message"],
             "date": commit_data["commit"]["committer"]["date"],
             "url": commit_data["html_url"],
             "author": commit_data["commit"]["author"]["name"],
+            "merged": merged,
             "stats": commit_data["stats"],
             "files": [{"filename": file['filename'], "additions": file['additions'], "deletions": file['deletions']}
                         for file in commit_data['files']]
@@ -203,8 +220,10 @@ def get_user_global_commits(repo_full_name, username, start_date):
                         print(branch_name," - ",sha)
 
                         detailed_commit = get_commit_details_from_SHA(repo_full_name, sha)
+
                         if detailed_commit:
                             detailed_commit['branch'] = branch_name
+                            detailed_commit['merged'] = False            # Only for Global Commits, set as non-merged
                             commits_with_details.append(detailed_commit)
 
                     page += 1  # Go to the next page
@@ -214,8 +233,7 @@ def get_user_global_commits(repo_full_name, username, start_date):
     else:
         print(f"Error fetching branches: {branches_response.status_code} {branches_response.text}")
     
-    # Reversing for Old -> New order
-    return commits_with_details[::-1]
+    return commits_with_details
 
 def get_user_issues(repo_full_name, username, start_date):
     #testing
@@ -491,7 +509,7 @@ def update_repo_details(username, repo_details, start_date):
     page = 1
     checkpoint_reached = False  # Last Saved Snapshot
     valid_date = True           # Window till start_date
-    latest_snapshot_id = None   # Initialize latest_snapshot_id to track the latest event ID
+    latest_snapshot_id = -1   # Initialize latest_snapshot_id to track the latest event ID
 
     new_updates = {
         'commits': [],
@@ -512,7 +530,7 @@ def update_repo_details(username, repo_details, start_date):
 
             # Check Valid Events
             for event in data:
-                if page!=1:    # Perform below code only once 
+                if page!=1:    # Perform below code only for the first page time 
                     break
 
                 if (event['type'] in github_events) and (repo_details['name'] in event['repo']['name']):
@@ -623,7 +641,7 @@ def update_repo_details(username, repo_details, start_date):
     if not checkpoint_reached:
         return 'redirect'
 
-    # ---> Update repo_details with the <new_updates> dict
+    # ---> Update database repo_details with the <new_updates> dict
 
     repo_details['commits'] += new_updates['commits']
     repo_details['pull_requests'] += new_updates['new_prs']
@@ -637,6 +655,7 @@ def update_repo_details(username, repo_details, start_date):
     for idx,issue in enumerate(repo_details['issues']):
         if issue['number'] in new_updates:
             repo_details['issues'][idx] = new_updates[issue['number']]
+            del new_updates[issue['number']]
     
     # Update PRs
     for idx,pr in enumerate(repo_details['pull_requests']):
@@ -653,8 +672,16 @@ def update_repo_details(username, repo_details, start_date):
             
             if pr_changes['comments']:
                 repo_details['pull_requests'][idx]['comments'] += pr_changes['comments']
+        
+            del new_updates[pr['pr_number']]
 
+    # If anything remains, it is a new pull request with comments --> So append it directly
+    for pr_no in new_updates:
+        new_updates[pr_no]['pr_number'] = pr_no
+        repo_details['pull_requests'].append(new_updates[pr_no].copy())
+        
 
+    # Set Latest Snapshot
     repo_details['snapshot'] = latest_snapshot_id
 
     return repo_details
@@ -811,6 +838,10 @@ def handle_push_event(event, repo_details):
 
 
 #Direct Frontend-Backend Mapping Routes -------------->
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204  # No content
+
 
 @app.route('/<user>', methods=['GET', 'POST'])
 def get_user(user):
@@ -844,7 +875,9 @@ def get_contributions(user):
 @app.route('/<user>/repos', methods=['GET','POST'])
 def get_user_repos(user):
 
-    username = user
+    user_info = get_user_info(get_login_name(user))
+    username = user_info['login']
+
     user_repos = get_user_repositories(username)
 
     repo_names = [repo['name'] for repo in user_repos]
@@ -857,20 +890,35 @@ def get_user_repos(user):
 
 
 
+
 # Mapping Backend -- MongoDB -- Frontend Routes ------------>
 
-@app.route('/<user>/<repo>/repo_details', methods=['GET', 'POST'])
-def get_repo_data_from_db(user, repo):
+@app.route('/<org>/<user>/<repo>/repo_details', methods=['GET', 'POST'])
+def get_repo_data_from_db(org, user, repo):
+
+    # Set Collecions Dynamically
+    user_collection = db[f"{org}_user_data"]
+    data_collection = db[f"{org}_github_data"]
 
     invalid = False
-    username = get_login_name(user)
     start_date = get_start_date()  
+    user_info = get_user_info(get_login_name(user))
+    username = user_info['login']
+    
+    # Update the Org Members collection
+
+    user_collection.update_one(
+        {"login": username}, 
+        {"$set": user_info},
+        upsert=True
+    )
 
     # Check if the user exists in the database
-    db_user_data = collection.find_one({"user_info.login": username})  
+    db_user_data = data_collection.find_one({"user_info.login": username})  
     if not db_user_data:
         print("No User")
         invalid = True  
+        
 
     # Check if the repo exists in the user's object
     db_repo_details = db_user_data.get(repo) if db_user_data else None
@@ -882,11 +930,10 @@ def get_repo_data_from_db(user, repo):
     # User or repo does not exist, upsert user info and repo details
     if invalid:
 
-        user_info = get_user_info(username)
         if not user_info:
             return jsonify({"error": f"User data not found for {user}"}), 404
 
-        user_repos = get_user_repositories(user)
+        user_repos = get_user_repositories(username)
 
         # Find the requested repo details
         parent_repo = next((base_repo for base_repo in user_repos if base_repo['name'] == repo), None)
@@ -917,7 +964,7 @@ def get_repo_data_from_db(user, repo):
             "language": parent_repo["language"],
             "owner": {
                 "login": parent_repo["owner"]["login"],
-                "id": parent_repo["owner"]["id"],
+                "avatar_url": parent_repo["owner"]["avatar_url"],
                 "url": parent_repo["owner"]["html_url"]
             },
             "stars": parent_repo["stargazers_count"],
@@ -939,12 +986,12 @@ def get_repo_data_from_db(user, repo):
         # Set the Snapshot -- For update tracking
         event_url = f"{BASE_URL}/users/{username}/events?per_page=100"
         response = requests.get(event_url, headers=HEADERS)
+
+        # Set Dummy Snapshot -- if No Previous Activity in 90 days / No Valid Event Found
+        repo_details['snapshot'] = '-1'
         
         if response.status_code == 200:
             data = response.json()
-
-            # Set Dummy Snapshot -- if No Previous Activity in 90 days / No Valid Event Found
-            repo_details['snapshot'] = '-1'
 
             for event in data:
                 if (event['type'] in github_events) and (repo_details['name'] in event['repo']['name']):
@@ -956,34 +1003,42 @@ def get_repo_data_from_db(user, repo):
             print(f"Failed to fetch events for {username}")
 
 
-
         # Upsert the user info and repo details into the database
-        collection.update_one(
+        data_collection.update_one(
             {"user_info.login": user_info.get('login')}, 
             {"$set": {"user_info": user_info, repo: repo_details}},
             upsert=True
         )
 
         return jsonify(repo_details), 200  
+    
+
+
+
 
     # If both user and repo exist, update DB and Return Data
     else:
+
+        # Note --- current workaround till we find a way to check latest repo activity
+        if db_repo_details['snapshot'] == '-1':
+            return jsonify(db_repo_details), 200
+
 
         latest_repo_data = update_repo_details(username, db_repo_details, start_date)
         
         # If the snapshot was not found -- 90 days outdated
         if latest_repo_data == 'redirect':
             try:
-                collection.update_one(
+                data_collection.update_one(
                     {"user_info.login": username},
                     {"$unset": {repo: ""}}  # Remove the repo entirely
                 )         
-                return redirect(f'/{username}/{repo}/repo_details') # Call Same route without repo
+                return redirect(f'/{org}/{username}/{repo}/repo_details') # Call Same route without repo - to update entirely
             except:
                 return jsonify({"error":"Redirect Failed"}), 500
             
         try:
-            collection.update_one(
+            data_collection.update_one(
                 {"user_info.login": username}, 
                 {"$set": {repo: latest_repo_data}},
                 upsert=True
