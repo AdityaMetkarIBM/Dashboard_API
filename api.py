@@ -1005,39 +1005,8 @@ def extract_all_details(user_info, full_repo, start_date):
 
     return repo_details
 
-def auto_update():
 
-    user_collection = db["IBM_user_data"]
-    data_collection = db["IBM_github_data"]
-    mappings_collection = db['IBM_user_mappings']
-    repo_collection = db['IBM_repositories']
-
-
-    while True:
-        app.logger.info('Update Started')
-        
-        for repo in repo_collection.find({}):
-            app.logger.info(f"Updating -> {repo['repo_name']}")
-
-            repo_name = repo['repo_name']
-            enterprise = repo['enterprise']
-            contributors = repo['contributors']
-            last_snapshot = repo['snapshot']
-
-            start_date = get_start_date()
-
-            # if repo_name in ('IBM/ibm-spectrum-scale-csi'):
-            update_repo_details(repo_name, enterprise, contributors, last_snapshot, start_date)
-        
-        app.logger.info('Update DONE')
-        sleep(3600)
     
-
-            
-
-
-
-
 
 
 
@@ -1214,6 +1183,5 @@ def get_repo_data_from_db(user, owner, repo):
 
 
 if __name__ == '__main__':
-    Thread(target=auto_update, daemon=True).start()
     app.run()
 
