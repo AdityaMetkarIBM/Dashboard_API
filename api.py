@@ -1000,7 +1000,7 @@ def extract_all_details(user_info, full_repo, start_date):
         {"$addToSet": {"contributors": user_info['login']}}
     )
 
-    print(f'Successfully Extracted {full_repo} -> {user_info['login']}')
+    print(f"Successfully Extracted {full_repo} -> {user_info['login']}")
 
     return repo_details
 
@@ -1016,7 +1016,7 @@ def auto_update():
         print('Update called')
         
         for repo in repo_collection.find({}):
-            print(f'Updating -> {repo['repo_name']}')
+            print(f"Updating -> {repo['repo_name']}")
 
             repo_name = repo['repo_name']
             enterprise = repo['enterprise']
@@ -1133,7 +1133,7 @@ def handle_webhook():
 @app.route('/<user>/<owner>/<repo>/repo_details', methods=['GET', 'POST'])
 def get_repo_data_from_db(user, owner, repo):
 
-    full_repo = f'{owner}/{repo}'
+    full_repo = f"{owner}/{repo}"
 
     print(full_repo)
 
