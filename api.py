@@ -10,6 +10,7 @@ import json
 
 from threading import Thread
 from time import sleep
+import logging
 
 # Load environment variable
 load_dotenv()
@@ -1013,10 +1014,10 @@ def auto_update():
 
 
     while True:
-        print('Update called')
+        app.logger.info('Update Started')
         
         for repo in repo_collection.find({}):
-            print(f"Updating -> {repo['repo_name']}")
+            app.logger.info(f"Updating -> {repo['repo_name']}")
 
             repo_name = repo['repo_name']
             enterprise = repo['enterprise']
@@ -1028,7 +1029,7 @@ def auto_update():
             # if repo_name in ('IBM/ibm-spectrum-scale-csi'):
             update_repo_details(repo_name, enterprise, contributors, last_snapshot, start_date)
         
-        print('Update DONE')
+        app.logger.info('Update DONE')
         sleep(3600)
     
 
