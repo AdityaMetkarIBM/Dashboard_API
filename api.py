@@ -112,7 +112,7 @@ def get_user_contributions(username):
     }
 
     # Make the request
-    response = requests.post(f'{session['BASE_URL']}/graphql', json=payload, headers=session['HEADERS'])
+    response = requests.post(f"{session['BASE_URL']}/graphql", json=payload, headers=session['HEADERS'])
 
     if response.status_code == 404:
         return None
