@@ -86,7 +86,14 @@ def get_user_info(username):
         print(f"Error fetching user info: {response.status_code} {response.text}")
         return {}
 
-def get_user_contributions(username):
+def get_user_contributions(username, enterprise):
+
+    if enterprise:
+        BASE_URL = "https://api.github.ibm.com"
+        HEADERS = set_headers(os.getenv('GITHUB_ENTERPRISE'))
+    else:
+        BASE_URL = "https://api.github.com"
+        HEADERS = set_headers(os.getenv('GITHUB_TOKEN'))
 
     # Corrected GraphQL query
     query = '''
@@ -113,7 +120,7 @@ def get_user_contributions(username):
     }
 
     # Make the request
-    response = requests.post(f"{session['BASE_URL']}/graphql", json=payload, headers=session['HEADERS'])
+    response = requests.post(f"{BASE_URL}/graphql", json=payload, headers=HEADERS)
 
     if response.status_code == 404:
         return None
@@ -127,7 +134,6 @@ def get_user_contributions(username):
             if user_data and 'contributionsCollection' in user_data:
                 contribution_data = user_data['contributionsCollection']['contributionCalendar']
 
-                total_contributions = contribution_data.get('totalContributions', 0)
                 weeks = contribution_data.get('weeks', [])
 
                 days = []
@@ -137,15 +143,12 @@ def get_user_contributions(username):
                         obj = {
                             'date': day['date'],
                             'count': day['contributionCount'],
-                            'level': 0 if day['contributionCount'] == 0 else 1 if day['contributionCount'] <= 2 else 2 if day['contributionCount'] <= 5 else 3
                         }
                         days.append(obj)
                 
 
                 # Return the relevant data
-                return {
-                    "data": days
-                }
+                return days
             else:
                 print("Error: 'contributionsCollection' not found in the response data")
                 return None
@@ -728,9 +731,9 @@ def update_repo_details(full_repo, enterprise, contributors, last_snapshot, star
         # Update PRs
         for idx,pr in enumerate(repo_details['pull_requests']):
 
-            if str(pr['pr_number']) in new_updates[username]:
+            if pr['pr_number'] in new_updates[username]:
                 
-                pr_changes = new_updates[username][str(pr['pr_number'])]
+                pr_changes = new_updates[username][pr['pr_number']]
 
 
                 # If new detail changes
@@ -743,7 +746,7 @@ def update_repo_details(full_repo, enterprise, contributors, last_snapshot, star
                 if pr_changes['comments']:
                     repo_details['pull_requests'][idx]['comments'] += pr_changes['comments']
             
-                del new_updates[username][str(pr['pr_number'])]
+                del new_updates[username][pr['pr_number']]
 
         # If anything remains, it is a new pull request with comments --> So append it directly
         for pr_no in new_updates[username]:
@@ -1037,22 +1040,40 @@ def get_user(user):
 @app.route('/<user>/contributions', methods=['GET','POST'])
 def get_contributions(user):
 
-    if request.args.get('enterprise') == 'true':
-        session['enterprise'] = True
-        session['BASE_URL'] = "https://api.github.ibm.com"
-        session['HEADERS'] = set_headers(os.getenv('GITHUB_ENTERPRISE'))
-    else:
-        session['enterprise'] = False
-        session['BASE_URL'] = "https://api.github.com"
-        session['HEADERS'] = set_headers(os.getenv('GITHUB_TOKEN'))
+    try:
+        result = db['IBM_user_mappings'].find_one({'login': user})
+        p = result['public']
+        e = result['enterprise']
 
-    username = user
-    user_contributions = get_user_contributions(username)
+        c1,c2 = [],[]
 
-    if user_contributions:
-        return jsonify(user_contributions)
-    else:
-        return jsonify({"error": f"Something Went Wrong -- fetching Contributions -> {username}"}), 404 
+        if p:
+            c1 = get_user_contributions(p,False)
+        if e:
+            c2 = get_user_contributions(e,True)
+
+        combined = []
+
+
+        for obj1, obj2 in zip(c1, c2):
+
+            total = obj1['count'] + obj2['count']
+            level = 0 if total == 0 else 1 if total <= 2 else 2 if total <= 5 else 3
+
+            combined.append({
+                'date': obj1['date'],
+                'total': total,
+                'level': level
+            })
+
+        if combined:
+            return jsonify(combined)
+        else:
+            return jsonify({"error": f"Something Went Wrong -- fetching Contributions -> {user}"}), 404 
+    
+    except:
+        return jsonify({"error": f"Something Went Wrong -- fetching Contributions -> {user}"}), 404 
+
 
 
 
